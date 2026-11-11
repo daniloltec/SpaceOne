@@ -1,5 +1,99 @@
 # SpaceOne
 
+O escopo de implementação deste repositório é o controle de salas de reunião descrito em `docs/prompt_cursor.md` e `docs/rn/requisitos_funcionais.md`.
+
+## Como executar
+
+Pré-requisitos: Docker com Compose e, para desenvolvimento no host, Node.js 22 ou superior.
+
+1. Copie `.env.example` para `.env`.
+2. Troque `AUTH_SECRET`, `ADMIN_PASSWORD` e a senha do Postgres antes de publicar. Um segredo pode ser gerado com:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+3. Na VPS:
+
+```bash
+git pull && docker compose up -d --build
+```
+
+O Compose sobe PostgreSQL 16, o painel e um worker. Na inicialização o app aplica as migrations e o seed. O seed cria o administrador de `ADMIN_EMAIL` somente se ele ainda não existe, e não troca a senha depois. Também garante os recursos padrão e as configs `lembrete_minutos_antes=15` e `aviso_laranja_minutos_antes=15`.
+
+Acesse `http://localhost:3000` (ou a porta de `APP_PORT`). O primeiro login usa `ADMIN_EMAIL` e `ADMIN_PASSWORD`.
+
+Para desenvolver no host, suba só o banco e rode o app localmente:
+
+```bash
+docker compose up -d db
+npx prisma migrate deploy
+npm run db:seed
+npm run dev
+```
+
+`DATABASE_URL` no `.env` aponta para `localhost` na porta `POSTGRES_PORT` (5433 por padrão, para não disputar com um Postgres já instalado na máquina). Dentro do Compose essa URL é trocada para o serviço `db`.
+
+### Proxy reverso
+
+O processo escuta a porta 3000 dentro da rede Docker. No EasyPanel/Traefik, aponte o domínio para essa porta do serviço `app`. Defina `AUTH_URL` e `APP_URL` com a URL pública, por exemplo `https://salas.exemplo.com`. O Postgres fica publicado só em `127.0.0.1`, para não ficar aberto na internet.
+
+### Backup do Postgres
+
+```bash
+docker compose exec -T db pg_dump -U spaceone -d spaceone > backup-spaceone.sql
+```
+
+Para restaurar em uma base vazia:
+
+```bash
+docker compose exec -T db psql -U spaceone -d spaceone < backup-spaceone.sql
+```
+
+O volume nomeado `pgdata` guarda os dados. O volume `uploads` será usado pelas fotos das salas.
+
+### Google Agenda
+
+Ao criar uma reserva, o sistema grava no banco e tenta criar o evento com Meet na agenda da sala (`googleCalendarId`). Se o Google falhar, a reserva permanece e o worker tenta de novo. O cancelamento remove o evento e avisa os participantes. Sem `GOOGLE_SERVICE_ACCOUNT_JSON` ou sem agenda na sala, a reserva fica só no SpaceOne.
+
+A conta de serviço precisa de delegação em todo o domínio no Google Workspace:
+
+1. Criar uma service account no Google Cloud e baixar o JSON.
+2. Ativar a Google Calendar API no projeto.
+3. No admin do Workspace, autorizar o client ID da service account no escopo `https://www.googleapis.com/auth/calendar`.
+4. Colocar o JSON em `GOOGLE_SERVICE_ACCOUNT_JSON` (o texto ou o caminho do arquivo) e o usuário a ser personificado em `GOOGLE_IMPERSONATE_USER`.
+5. Em cada sala, informar o identificador da agenda do Google.
+6. Preencher `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` e `SMTP_FROM` para o convite, o lembrete e o aviso de cancelamento.
+
+O JSON e a senha do e-mail ficam só no servidor. O worker, a cada minuto, atualiza o status da reserva, envia o lembrete (`lembrete_minutos_antes`) e repete o que o Google ou o e-mail não concluíram.
+
+### N8N
+
+O N8N não faz parte deste Compose. Ele permanece na VPS, no IP ou domínio público que você já usa. Em `/admin/integracoes` o administrador informa a URL pública do webhook, o segredo e quais eventos enviar: `reserva.criada`, `reserva.cancelada`, `reserva.iniciada` e `reserva.finalizada`. O SpaceOne faz POST do JSON e coloca no cabeçalho `X-SpaceOne-Signature` o HMAC SHA256 do corpo, em hexadecimal, calculado com esse segredo. Endereços locais e redirecionamentos são recusados. Se o envio falhar, o worker tenta de novo até cinco vezes. Nenhum fluxo é criado no N8N por este sistema. O segredo fica no banco, então o backup do Postgres também o contém. Prefira `https` quando o webhook tiver domínio.
+
+### Stack desta fase
+
+| Camada | Tecnologia |
+| --- | --- |
+| Frontend e API | Next.js 16, React 19, TypeScript, Tailwind CSS 4 |
+| Autenticação | Auth.js (NextAuth) com e-mail e senha (bcrypt) |
+| Banco | PostgreSQL 16 e Prisma 6 |
+| Datas | date-fns e date-fns-tz, fuso America/Fortaleza, gravação em UTC |
+| Jobs | Worker separado com node-cron |
+| Execução | Docker Compose |
+
+## Salas e tablets
+
+Cada sala cadastrada em `/admin/salas` recebe um link `/tablet/[token]`. Esse endereço fica no tablet fixado na porta e mostra só aquela sala. A tela fica verde quando a sala está livre, laranja minutos antes da próxima reunião e vermelha enquanto a reunião acontece. No verde, a pessoa reserva sem login: escolhe o responsável, o horário, a duração, a quantidade e os participantes. O estado chega por uma conexão contínua e, se ela cair, o tablet consulta de novo a cada 15 segundos. As fotos das salas ficam no volume `uploads`, na pasta definida por `UPLOAD_DIR`.
+
+## Painel e estatísticas
+
+A página inicial mostra o estado de cada sala no mesmo critério do tablet: livre, em breve ou ocupada, com o responsável e o tempo restante. A lista de próximas reservas continua abaixo. Em `/admin/estatisticas` o administrador filtra um período e vê quem mais reservou, a média de reuniões por dia em cada sala, o tempo médio por responsável, a taxa de ocupação e os horários de pico. Reserva cancelada não entra nessa conta. Gestor e recepção não abrem essa rota.
+
+## Reservas locais
+
+O calendário em `/calendario` mostra o dia, a semana e o mês, com filtro e cor por sala. A criação em `/reservas/nova` grava a reserva no banco, recusa horário no passado, sala desativada, excesso de capacidade e sobreposição na mesma sala. O cancelamento fica com quem criou, com a recepção e com o administrador. O link do Meet aparece na reserva quando a agenda da sala responde.
+
 ## Apresentação do projeto
 
 O **SpaceOne** é uma proposta de plataforma digital modular, concebida

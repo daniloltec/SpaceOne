@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+@theme {
+  --color-navy: #173b62;
+  --color-green: #159b78;
+  --color-orange: #e99b38;
+  --color-danger: #dc4c4c;
+  --color-surface: #f4f6f8;
+  --color-ink: #263445;
+  --font-sans: "Segoe UI", "Helvetica Neue", sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+}

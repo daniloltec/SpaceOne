@@ -1,0 +1,172 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Perfil {
+  ADMIN
+  GESTOR
+  RECEPCAO
+}
+
+enum StatusReserva {
+  AGENDADA
+  EM_ANDAMENTO
+  CONCLUIDA
+  CANCELADA
+}
+
+enum OrigemReserva {
+  PAINEL
+  TABLET
+}
+
+// Setores: TI, RH, Financeiro...
+model Setor {
+  id      String   @id @default(cuid())
+  nome    String   @unique
+  pessoas Pessoa[]
+}
+
+// Qualquer pessoa que pode ser responsável ou convidada
+model Pessoa {
+  id            String   @id @default(cuid())
+  nome          String
+  email         String   @unique
+  setorId       String?
+  setor         Setor?   @relation(fields: [setorId], references: [id])
+  podeReservar  Boolean  @default(false) // true para gestores
+  ativo         Boolean  @default(true)
+  criadoEm      DateTime @default(now())
+
+  usuario       Usuario?
+  reservasResp  Reserva[]       @relation("ResponsavelReserva")
+  participacoes Participante[]
+}
+
+// Quem faz login no painel (admin, gestor, recepção)
+model Usuario {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  senhaHash   String
+  perfil      Perfil
+  ativo       Boolean  @default(true)
+  pessoaId    String?  @unique
+  pessoa      Pessoa?  @relation(fields: [pessoaId], references: [id])
+  criadoEm    DateTime @default(now())
+
+  reservasCriadas   Reserva[] @relation("CriadaPor")
+  reservasCanceladas Reserva[] @relation("CanceladaPor")
+  logs              LogAuditoria[]
+}
+
+model Sala {
+  id               String   @id @default(cuid())
+  nome             String   @unique       // "Sala 1"
+  capacidade       Int
+  descricao        String?
+  fotoUrl          String?
+  ativa            Boolean  @default(true)
+  googleCalendarId String?  // agenda/recurso do Google associado
+  tabletToken      String   @unique @default(cuid()) // identifica o tablet da sala
+  criadoEm         DateTime @default(now())
+
+  recursos SalaRecurso[]
+  reservas Reserva[]
+}
+
+// Catálogo de recursos: Câmera, Microfone, TV, Computador...
+model Recurso {
+  id     String        @id @default(cuid())
+  nome   String        @unique
+  icone  String?
+  salas  SalaRecurso[]
+}
+
+model SalaRecurso {
+  salaId     String
+  recursoId  String
+  quantidade Int     @default(1)
+  sala       Sala    @relation(fields: [salaId], references: [id], onDelete: Cascade)
+  recurso    Recurso @relation(fields: [recursoId], references: [id])
+
+  @@id([salaId, recursoId])
+}
+
+model Reserva {
+  id                 String         @id @default(cuid())
+  salaId             String
+  sala               Sala           @relation(fields: [salaId], references: [id])
+  responsavelId      String
+  responsavel        Pessoa         @relation("ResponsavelReserva", fields: [responsavelId], references: [id])
+  criadaPorId        String?        // null quando criada no tablet (sem login)
+  criadaPor          Usuario?       @relation("CriadaPor", fields: [criadaPorId], references: [id])
+  origem             OrigemReserva
+  assunto            String
+  // Timestamptz para a exclusion constraint tstzrange gravar e comparar em UTC.
+  inicio             DateTime       @db.Timestamptz(3)
+  fim                DateTime       @db.Timestamptz(3)
+  qtdParticipantes   Int            @default(1)
+  status             StatusReserva  @default(AGENDADA)
+
+  meetLink           String?
+  googleEventId      String?
+
+  canceladaPorId     String?
+  canceladaPor       Usuario?       @relation("CanceladaPor", fields: [canceladaPorId], references: [id])
+  canceladaEm        DateTime?
+  motivoCancelamento String?
+
+  criadoEm           DateTime       @default(now())
+  atualizadoEm       DateTime       @updatedAt
+
+  participantes Participante[]
+
+  @@index([salaId, inicio, fim])
+  @@index([responsavelId])
+  @@index([status, inicio])
+}
+
+model Participante {
+  reservaId        String
+  pessoaId         String
+  conviteEnviadoEm DateTime?
+  lembreteEnviadoEm DateTime?
+  reserva          Reserva @relation(fields: [reservaId], references: [id], onDelete: Cascade)
+  pessoa           Pessoa  @relation(fields: [pessoaId], references: [id])
+
+  @@id([reservaId, pessoaId])
+}
+
+// Configurações gerais (minutos do lembrete, minutos do aviso laranja etc.)
+model Configuracao {
+  chave String @id
+  valor String
+}
+
+// Conexão preparada para o N8N (sem fluxos configurados)
+model IntegracaoN8n {
+  id            String   @id @default(cuid())
+  ativa         Boolean  @default(false)
+  webhookUrl    String?
+  segredo       String?  // assinatura dos envios
+  eventos       String[] // ex: ["reserva.criada","reserva.cancelada"]
+  atualizadoEm  DateTime @updatedAt
+}
+
+model LogAuditoria {
+  id         String   @id @default(cuid())
+  usuarioId  String?
+  usuario    Usuario? @relation(fields: [usuarioId], references: [id])
+  acao       String   // "reserva.criada", "reserva.cancelada", "sala.editada"...
+  entidade   String
+  entidadeId String?
+  detalhes   Json?
+  criadoEm   DateTime @default(now())
+
+  @@index([entidade, entidadeId])
+}
